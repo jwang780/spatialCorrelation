@@ -1,0 +1,662 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+ 
+'''
+## THIS IS FOR PYTHON27.. BY DEFAULT ON EC2, #!/usr/bin/env python direct to python 2.6, which #!/usr/bin/env python27 direct to python 2.7
+
+Finalized update on 11/24/2014:
+(1) Update
+hazard_info= [str(round(float(ll),3)) if ll else '' for ll in hazard_info]
+in the case where there is empty string that cannot be convert to double
+to
+hazard_info= [str(round(float(ll),3)) if ll else '0' for ll in hazard_info]
+
+Finalized update on 09/24/2014:
+    (0.1) introduce function event_sampling() that wraps up the sampling block, can be either distance-depedent or non-distance-depedent by specifying the spatial_decay argument.
+    (0.2) introduce function mapper_output() that wraps up the format-printing to standard output
+    (0.3) introduce SD_Kriging() that wraps up the location standard deviation for kriging and calculated before passing to Kriging()
+    (0.4) cProfile shows that majority of time is spent on sps.cdist() and distance() function
+    (1)including distance-dependent correlation
+    (2)gaussian_one_factor_sampling() function updated to be able to handle multiple occurrences for single event.
+    (2)can specify the max number of grids to be sampled or specify a fixed percentage: by setting line279: N_MaxSamplingSize=10000 or = fixed percentage * N_loc
+    (3)currently, grids to sample are randomly sampled from all grids.. o.w. have singularity issue. Althoug codes with sorted hazards have been included from line 496-506. but see issue (4)
+    (4)One check of sigularity included: if cholesky decomposition failed, do svd and set all negative eigenvalues to 0. NOTE: this cannot solve the problem if sort hazard.
+    (5)update in both # gaussian_one_factor_sampling() and spatial_sampling(), in case a single integer input that cannot do "for occID in occID_set:" later
+    occID_set=np.array(occID_set)
+    (6)all sampling-related function has been updated to include the arguments: N_loc and N_vul.. used to be calculated in the function.
+   
+NOTE: Potential Memory overflow if N_loc and N_vul are very very large, currently not an issue with AWS memory and current grid size.
+    To solve this: (1)set N_Kriging_Sub (current set is sample 1e4 and kriging all others all together, if N_loc is big, sample in smaller blocks)
+                   (2) write sample_sev_loc and sample_sev_kriging to std output separately. Currently sample_sev_total=sample_sev_loc+sample_sev_kriging and write together.. If N_Kriging is big, could have overflow, though very unlikely.
+'''
+'''
+Define the functions used
+Finalized update on 07/17/2014
+(1) fix the bug of
+hazard_info= [str(round(float(ll),3)) for ll in hazard_info]
+to
+hazard_info= [str(round(float(ll),3)) if ll else '' for ll in hazard_info]
+in the case where there is empty string that cannot be convert to double
+'''
+ 
+
+import os
+import numpy as np
+import scipy as sp
+#import pandas as pd
+import scipy.stats as sps
+import scipy.spatial.distance as spsd
+#import boto
+import math
+from sys import stdin
+import sys
+#np.seterr(divide='ignore', invalid='ignore')
+## http://stackoverflow.com/questions/10939213/how-can-i-calculate-the-nearest-positive-semi-definite-matrix
+## return positive definite CORRELATION MATRIX, input A could be correlation or covariance matrix  
+## This is a non-iterative method, slightly modified from Rebonato and Jackel (1999) (page 7-9). Iterative approaches can take a long time to process on matrices of more than a few hundred variables.
+def nearPSD(A,epsilon=0):
+     n = A.shape[0]
+     eigval, eigvec = np.linalg.eig(A)
+     val = np.matrix(np.maximum(eigval,epsilon))
+     vec = np.matrix(eigvec)
+     T = 1/(np.multiply(vec,vec) * val.T)
+     T = np.matrix(np.sqrt(np.diag(np.array(T).reshape((n)) )))
+     B = T * vec * np.diag(np.array(np.sqrt(val)).reshape((n)))
+     out = B*B.T
+     return(np.array(out))
+'''
+EDIT: to "deal with" your problem depends on what you want. Anything you do to make it work would yeild a cholesky that will not be the Cholesky of the original matrix. If you are doing an iterative process and it can be fudge a little, if it is already symmetric then use numpy.linalg.eigvalsh to find the eigenvalues of the matrix. Let d be the most negative eigenvalue. Then set A += (abs(d) + 1e-4) * np.identity(len(A)). this will make it positive definite.
+EDIT: It is a trick used in the Levenberg–Marquardt algorithm. This links to a Wikipedia article on Newton's Method that mentions it as the article on Levenberg–Marquard is doesn't go into this.Also, here is a paper on it as well. Basically this will shift all the eigenvalues by (abs(d) + 1e-4) which will thereby make them all positive, which is a sufficient condition to the matrix being positive definite.
+'''
+def nearPSD_eigen(A,epsilon=1e-4):
+    eigen=sp.linalg.eigvalsh(A)
+    if np.any(eigen<0):
+        d=min(eigen)
+        A += (abs(d) + epsilon) * np.identity(len(A))
+    return A
+# for single event multiple occurrence
+def gaussian_one_factor_sampling(occID_set, eventID, locID, hazard_values,N_loc,N_vul,const_rho):
+    #N_loc=len(locID)
+    #N_vul=1
+    # in case a single integer input that cannot do "for occID in occID_set:" later
+    #occID_set=np.array(occID_set)
+   
+    for occID in occID_set:
+        if const_rho==1:
+            sample_sev_total =sps.uniform.rvs(size=1)
+            sample_sev_total=[str(round(sample_sev_total,8))]  
+        else:
+            sample_normal_1=sps.norm.rvs(size=1)
+            sample_normal_2=sps.norm.rvs(size=N_loc*N_vul)
+            sample_sev_total = math.sqrt(const_rho)*sample_normal_1+math.sqrt(1-const_rho)*sample_normal_2
+            sample_sev_total=sps.norm.cdf(sample_sev_total)
+            sample_sev_total=[str(round(sample_sev_total[i],8)) for i in xrange(len(sample_sev_total))]
+        # OUTPUT TO STANDARD OUTPUT
+        mapper_output(sample_sev_total,occID,eventID,locID,hazard_values,N_loc,N_vul)
+radius = 6371 # km
+# define the distance function if using lat long
+def distance(origin, destination):
+    ## origin an dest have to be two locations, cannot accept vectors.. Use distance_square shown below for vector computation
+    lat1, lon1 = origin
+    lat2, lon2 = destination
+#  
+    global radius
+    dlat = math.radians(lat2-lat1)
+    dlon = math.radians(lon2-lon1)
+   
+    sin_lat=math.sin(dlat/2)
+    sin_lon=math.sin(dlon/2)
+   
+    a = sin_lat * sin_lat + math.cos(math.radians(lat1)) \
+        * math.cos(math.radians(lat2)) * sin_lon * sin_lon
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    d = radius * c
+#
+    return d
+   
+def distance2(origin, destination, N_orig, N_dest):
+    global radius
+    ## origin an dest  are numpy vectors.. Use distance_square shown below for vector computation
+    distance=np.zeros([N_orig, N_dest])
+    for j in xrange(N_dest):
+        lat2, lon2 = destination[j]
+        cos_lat2=math.cos(math.radians(lat2))
+        for i in xrange(N_orig):
+            lat1, lon1 = origin[i]   
+        #
+            dlat = math.radians(lat2-lat1)
+            dlon = math.radians(lon2-lon1)
+           
+            sin_lat=math.sin(dlat/2)
+            sin_lon=math.sin(dlon/2)
+           
+            a = sin_lat * sin_lat + math.cos(math.radians(lat1)) \
+                * cos_lat2 * sin_lon * sin_lon
+            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+            distance[i,j]=radius * c
+#
+    return distance
+## quicker calculation for square distance matrix compared to using spsd.cdist(coords,coords, distance)
+def distance_square(coords):
+    N_loc=len(coords)
+    distance_compact=[]
+    for i in xrange(N_loc):
+        for j in xrange(i+1,N_loc):
+            #distance_compact=np.append(distance_compact,distance(coords[i],coords[j]))
+            distance_compact.append(distance(coords[i],coords[j]))
+           
+    return spsd.squareform(np.array(distance_compact))
+                   
+'''
+--------------------------------------------
+Created on Mar 6, 2013
+@author: kai.cui
+This algorithm is developed to fastly compute (A kron B)*X, where X can be either a matrix or a vector, without
+the need to obtain the huge matrix after kronector product
+ arg is an array
+--------------------------------------------
+'''
+# This is for (A kron B)X..where A is not square but B is square, but this is a generel algorithm for this.
+#def kronmult2(Q,X, mA, nA, mB,nB, nX, B_type):
+def kronmult2(Q,X,mB,nX,B_type):
+    mA, nA=Q[0].shape
+    nB=mB
+    Y=np.empty((mA*mB,nX))
+    if B_type==1: #if identity matrix
+        for i in xrange(0, nX):
+            x=X[:,i].reshape(nA,nB)
+            Y[:,i]=np.dot(Q[0],x).reshape(1,-1)
+    elif B_type==2:  # if symmetric
+        for i in xrange(0, nX):
+            x=X[:,i].reshape(nA,nB)
+            Y[:,i]=np.dot(np.dot(Q[0],x),Q[1]).reshape(1,-1)
+    else:
+        for i in xrange(0, nX):
+            x=X[:,i].reshape(nA,nB)
+            Y[:,i]=np.dot(np.dot(Q[0],x),Q[1].T).reshape(1,-1)      
+    return Y
+   
+   
+def kronmult(Q,X):  # This is to compute (A kron B)*X without necessarily return the big A kron B matrix.
+    N=len(Q)
+    n=[0]*N
+    nright=1
+    nleft=1
+    for i in xrange(0, N-1):
+        n[i]=Q[i].shape[0]
+        nleft=nleft*n[i]
+    n[N-1]=Q[N-1].shape[0]
+#   
+    for i in xrange(N-1,-1,-1):
+        base=0
+        jump=n[i]*nright
+        for k in range(0,nleft):
+            for j in range(0, nright):
+                index1=base+j
+                index2=index1+nright*(n[i]-1)+1
+                X[index1:index2:nright]=np.dot(Q[i],X[index1:index2:nright])
+            base=base+jump
+        nleft=nleft/n[max(i-1,0)]
+        nright=nright*n[i]
+        
+'''
+--------------------------------------------
+Created on Mar 1, 2013
+@author: kai.cui
+This is to sample the crude VRG given the spatial decay parameter (spatial_par, assuming exponential decay),
+the structure correlation matrix Sigma_vul,
+--------------------------------------------
+'''
+def corr_sampling(corr_spatial_cholesky, corr_vul_cholesky, N_event, N_loc, N_vul):
+   
+    sample_normal=sps.norm.rvs(size=N_loc*N_vul*N_event).reshape(N_loc*N_vul,-1)
+   
+    '''
+    Old version to compute (A kron B)*X: compute the kronecker product first
+   
+    # obtain the cholesky decomposition for the big correlation matrix
+    corr_combined_cholesky=np.kron(corr_spatial_cholesky, corr_vul_cholesky)
+    # Start generating the samples
+    sample_normal=np.dot(corr_combined_cholesky, sample_normal)   
+    #Fast version Using Fernandes algorithm
+    kronmult([corr_spatial_cholesky, corr_vul_cholesky],sample_normal)
+    return sample_normal
+    '''
+   
+    #Faster version
+    return kronmult2([corr_spatial_cholesky, corr_vul_cholesky],sample_normal,N_vul,N_event,0)
+
+'''
+--------------------------------------------
+Created on Mar 6, 2013
+@author: kai.cui
+INPUT:
+sample_normal_loc:  output of previous step. N_loc*N_vul X N_event matrix of location losses with different vulnerability types
+corr_spatial_cholesky:  cholesky of the spatial correlation matrix.
+corr_vul_chelesky: cholesky of the vulnerability correlation matrix.
+corr_spatial_cross: correlation matrix corresponding to the cross distance matrix Dop
+Sigma_vul: vulnerability correlation matrix. Sigma_vul=corr_vul_chelesky*(corr_vul_chelesky).transpose
+-------------------------------------------------------------------------------------
+Note that the simple krigging follows the following:
+krigging_loss.transpose=sample_normal_loc.transpose*(corr_spatial kron Sigma_vul)^(-1)*(corr_spatial_cross kron Sigma_vul)
+i.e.
+krigging_loss=(corr_spatial_cross.T kron Sigma_vul)*(corr_spatial^(-1) kron Sigma_vul^(-1))*sample_normal_loc
+             =(corr_spatial_cross.T*corr_spatial^(-1)) kron (Sigma_vul*Sigma_vul^(-1))*sample_normal_loc
+             =[(corr_spatial_cross.T*corr_spatial^(-1)) kron I_{N_vul}]*sample_normal_loc
+--------------------------------------------
+'''
+'''
+def krigging(sample_normal_loc, A, corr_spatial_cross,corr_spatial_cholesky_inv,N_sub, N_vul, N_event):
+   
+    # Fast version with Fernandes algorithm
+    #kronmult([A, np.identity(N_vul)], sample_normal_loc)
+   
+    #Faster version
+    sample_normal_krigging=kronmult2([A], sample_normal_loc,N_vul,N_event,1)
+    sd_krigging=np.zeros((N_sub, N_event))
+    #calculating standard deviation
+    for i in range(0, N_sub):
+        loc_index=i/N_vul
+        sd_krigging[i,:]=(sum((np.dot(corr_spatial_cholesky_inv, corr_spatial_cross[:,loc_index]))**2))**0.5
+    sample_normal_krigging=sample_normal_krigging/sd_krigging
+    return sample_normal_krigging
+'''  
+'''
+def SD_kriging(A, corr_spatial_cross,corr_spatial_cholesky_inv,N_sub, N_vul):
+    #
+   
+    N_loc=N_sub/N_vul
+    sd_kriging=np.zeros((N_loc,1))
+    #calculating standard deviation
+    for i in xrange(N_loc):
+        sd_kriging[i]=(sum((np.dot(corr_spatial_cholesky_inv, corr_spatial_cross[:,i]))**2))**0.5
+   
+    sd_kriging=np.tile(sd_kriging, (1, N_vul))
+    #sd_krigging=np.reshape(sd_krigging,(-1,1),order='C')
+    sd_kriging=sd_kriging.reshape((-1,1))
+    return sd_kriging
+'''
+         
+                   
+def SD_kriging(B, scale_B, N_sub, N_vul):
+   
+    #B=np.dot(corr_spatial_cholesky_inv, corr_spatial_cross[:,i]
+    '''
+    scale_B is because B**2 may have overflow if elements of vector abs(B) is big, so scale_B=max(abs(B)), and B is normalized by devided by scale_B before passing to the function
+    '''
+   
+    N_loc=int((N_sub+0.0)/N_vul)
+    sd_kriging=np.zeros((N_loc,1))  # need to make sure sd_kriging is a column vector for np.tile function
+    #calculating standard deviation
+    for i in xrange(N_loc):
+        sd_kriging[i]=(sum(B[:,i]**2))**0.5*scale_B[i]
+       
+   
+    sd_kriging=np.tile(sd_kriging, (1, N_vul))
+    #sd_krigging=np.reshape(sd_krigging,(-1,1),order='C')
+    sd_kriging=sd_kriging.reshape((-1,1))
+    return sd_kriging
+
+def kriging(sample_normal_loc, A,sd_kriging, N_sub, N_vul, N_event):
+   
+    #A=np.dot(corr_spatial_cross.T, corr_spatial_inv) # will be used in kriging()
+   
+    '''
+    # Fast version with Fernandes algorithm
+    kronmult([A, np.identity(N_vul)], sample_normal_loc)
+    '''
+    #N_loc=N_sub/N_vul
+    #Faster version
+    sample_normal_kriging=kronmult2([A], sample_normal_loc,N_vul,N_event,1)
+    '''
+    sd_krigging=np.zeros((N_loc,1))
+    #calculating standard deviation
+    for i in range(0, N_loc):
+        sd_krigging[i]=(sum((np.dot(corr_spatial_cholesky_inv, corr_spatial_cross[:,i]))**2))**0.5
+   
+    sd_krigging=np.tile(sd_krigging, (1, N_vul))
+    #sd_krigging=np.reshape(sd_krigging,(-1,1),order='C')
+    sd_krigging=sd_krigging.reshape((-1,1))
+    '''
+    sample_normal_kriging=sample_normal_kriging/np.tile(sd_kriging,(1,N_event))
+    return sample_normal_kriging
+   
+
+def spatial_sampling(occID_set, eventID, locID, loc_lat, loc_lon, hazard_values, N_loc,N_vul,spatial_decay,N_MaxSamplingSize=1000):
+    # in case a single integer input that cannot do "for occID in occID_set:" later
+    #occID_set=np.array(occID_set)
+   
+    if spatial_decay>0:
+        raise Exception('Spatial-decay parameter has to be greater than 0!')
+   
+    #N_occ=occID_set.size # number of occurrences, not needed actually 
+    #N_loc=len(locID) # number of grids
+    # set number of sampling, the rest will be interpolated using kriging
+   
+    N_Sampling=min(N_MaxSamplingSize, N_loc)
+    N_Kriging=max(0,N_loc-N_MaxSamplingSize)
+    #   
+    '''
+    THINGS NEEDED HERE FOR SAMPLING including:
+    (1) common corr_spatial_chol as numpy array using np.loadtxt
+    (2) common corr_vul_chol
+    (3) calculate N_vule
+    '''
+    ## Common matrix used by event
+    #(0) vulnerability correlation matrix
+    if N_vul ==1:
+        Sigma_vul=np.array([1])
+        corr_vul_cholesky=np.array([1])
+    #N_vul=Sigma_vul.shape[0]
+    elif N_vul>1:
+        Sigma_vul=np.array([1])
+        raise Exception('Sigma_vul needs to be specified in the code if N_vul>0: in spatial_sampling()')
+        try:
+            corr_vul_cholesky=sp.linalg.cholesky(Sigma_vul,lower=True)
+        except:
+            #Sigma_vul=nearPSD_eigen(Sigma_vul)
+            #np.fill_diagonal(Sigma_vul,1)
+            #corr_vul_cholesky=sp.linalg.cholesky(Sigma_vul,lower=True)
+            #corr_vul_cholesky=np.array(sp.linalg.cho_factor(Sigma_vul,lower=True))
+            U,s,V=sp.linalg.svd(Sigma_vul)
+            s[s<0]=0
+            corr_vul_cholesky=np.dot(U,np.diag(np.sqrt(s)))
+           
+        #else:
+            #raise Exception("Vulnerability Correlation Matrix Non-Positive Definite, Not Soloved by NearPSD.")       
+    else:
+        raise Exception('N_vul has to be postive intergers')
+    #(1) coordinates
+    coords=np.array(zip(loc_lat[:N_MaxSamplingSize],loc_lon[:N_MaxSamplingSize]))
+    #(1) Distance matrix
+    #Do=spsd.cdist(coords, coords, distance)
+    # A faster version of the previous line with square correlation matrix
+    Do=distance_square(coords)
+   
+    corr_spatial=np.exp(spatial_decay*Do)
+    try:
+        corr_spatial_cholesky=sp.linalg.cholesky(corr_spatial,lower=True)
+        #corr_spatial_cholesky=np.array(sp.linalg.cho_factor(corr_spatial,lower=True))
+    except:
+        U,s,V=sp.linalg.svd(corr_spatial)
+        s[s<0]=0
+        corr_spatial_cholesky=np.dot(U,np.diag(np.sqrt(s)))
+       
+        #corr_spatial=nearPSD_eigen(corr_spatial)
+        #np.fill_diagonal(corr_spatial,1)
+        #corr_spatial_cholesky=sp.linalg.cholesky(corr_spatial,lower=True)
+        #corr_spatial_cholesky=np.array(sp.linalg.cho_factor(corr_spatial,lower=True))
+    #else:
+        #raise Exception("Spatial Correlation Matrix Non-Positive Definite, Not Soloved by NearPSD.")
+      ## scipy and numpy return UU.T differently, numpy returns U, scipy returns U^T, use lower=True to return the U.
+   
+    if N_Kriging>0:
+       
+        #N_Kriging_block=100
+        '''
+        THINGS NEEDED HERE FOR KRIGING:
+        (1)corr_spatial_chol_inv
+        (2)corr_spatial_inv: 400*400
+        (3) corr_vul_chol_inv -- dont actually needs this
+        (4) corr_spatial_cross in blocks - already calculated before
+        '''       
+        #pcoords=np.array(zip(loc_lat[N_MaxSamplingSize:(N_MaxSamplingSize+N_Kriging_block)],loc_lon[N_MaxSamplingSize:(N_MaxSamplingSize+N_Kriging_block)]))
+        pcoords=np.array(zip(loc_lat[N_MaxSamplingSize:],loc_lon[N_MaxSamplingSize:]))
+        #Dop=spsd.cdist(coords, pcoords,distance)
+        Dop=distance2(coords, pcoords,N_MaxSamplingSize,N_Kriging)
+       
+        corr_spatial_cross=np.exp(spatial_decay*Dop)
+       
+        corr_spatial_cholesky_inv=sp.linalg.solve_triangular(corr_spatial_cholesky, np.identity(N_Sampling),lower=True)
+        corr_spatial_inv=np.dot((corr_spatial_cholesky_inv).T, corr_spatial_cholesky_inv)
+       
+       
+        A=np.dot(corr_spatial_cross.T, corr_spatial_inv) # will be used in kriging()
+        B=np.dot(corr_spatial_cholesky_inv, corr_spatial_cross) # will be used in SD_kriging()
+        # normalize B in case B**2 has overflow:
+        scale_B=np.abs(B).max(axis=0); # column max
+        B=(B+0.0)/scale_B # normalize each column by its max
+       
+       
+        sd_kriging=SD_kriging(B,scale_B, N_Kriging*N_vul,N_vul)
+        #if N_vul>1:
+        #    corr_vul_cholesky_inv=sp.linalg.solve_triangular(corr_vul_cholesky, np.identity(N_vul),lower=True)
+        #else:
+        #    corr_vul_cholesky_inv=np.array([1])
+        Boolean_Kriging=True
+    else:
+        Boolean_Kriging=False
+       
+    #Boolean_Kriging=False
+   
+           
+    for occID in occID_set:  # sample this for all occID  
+     # START SAMPLING
+                   
+        sample_sev_loc=[]
+        sample_sev_kriging=[]
+        # start sampling and kriging. for memory safety, this is done for every N_SPLIT_OCC=100 event occurrence, and for kriging 1000 kriging is done together
+        N_occ_sample=1
+        # sample N_MaxSamplingSize locations
+        sample_normal_loc=corr_sampling(corr_spatial_cholesky, corr_vul_cholesky, N_occ_sample, N_Sampling, N_vul)
+        #sample_sev_loc=sps.norm.cdf(sample_normal_loc)
+        sample_sev_loc=sps.norm.cdf(sample_normal_loc)
+        sample_sev_loc=[str(round(sample_sev_loc[i][0],8)) for i in xrange(len(sample_sev_loc))]
+       
+                        
+        # IF KRIGING IS NEEDED
+       
+        if Boolean_Kriging: # need to do kriging    
+            #N_loc_kriging=N_Kriging
+   
+            # start Kriging
+   
+            N_kriging_sub=N_Kriging # dont split, kriging is done onces for all. no memory overflow expected here given the grid size
+            N_kriging_split=int(math.ceil(N_Kriging/float(N_kriging_sub)))
+            #N_split_step=N_kriging_sub*N_vul
+            for i in xrange(0,N_kriging_split):
+                N_sub=min(N_kriging_sub,N_Kriging-N_kriging_sub*i)
+               
+                #A=np.dot(corr_spatial_cross.T, corr_spatial_inv) ## MOVING OUTSIDE TO AVOID REPEATED CACULATIONS
+                sample_sev_kriging=kriging(sample_normal_loc, A,sd_kriging,N_sub*N_vul,N_vul,N_occ_sample)
+                #sample_sev_kriging=(sample_sev_kriging-np.mean(sample_sev_kriging))/np.std(sample_sev_kriging)
+                #sample_sev_kriging=sps.norm.cdf(sample_sev_kriging)
+                sample_sev_kriging=sps.norm.cdf(sample_sev_kriging)
+                sample_sev_kriging=[str(round(sample_sev_kriging[i][0],8)) for i in xrange(len(sample_sev_kriging))]
+       
+        # OUTPUT TO STANDARD OUTPUT
+        sample_sev_total=sample_sev_loc+sample_sev_kriging
+        mapper_output(sample_sev_total,occID,eventID,locID,hazard_values,N_loc,N_vul)
+       
+
+'''
+Note that the input master iter file has been combined with egh in Pig, so iter file has the format of
+occID, eventID, locID_list
+'''
+
+def event_sampling(occID_set, eventID, locID, lat, lon, hazard_values, N_loc, N_vul, spatial_decay, N_MaxSamplingSize=1000):
+        '''
+        # sort by hazard 1:
+        hazard1=[dump[0] for dump in hazard_values]
+        hazard1_sort_index=np.argsort(hazard1,kind='mergesort') # return the index of hazard1 in increasing order
+        hazard1_sort_index=[hazard1_sort_index[i] for i in xrange(-1,-1-len(hazard_values),-1)] # reverse to decreasing order
+        # all sorted by hazard 1, decreasing order
+        locID=[locID[ll] for ll in hazard1_sort_index]
+        lat=[lat[ll] for ll in hazard1_sort_index]
+        lon=[lon[ll] for ll in hazard1_sort_index]
+        hazard_values=[hazard_values[ll] for ll in hazard1_sort_index]
+               
+        spatial_sampling(occID_set, eventID_prev, locID, lat, lon, hazard_values, -0.051)
+            #gaussian_one_factor_sampling(occID_prev, eventID_prev, locID, hazard_values, 1)
+        '''
+        #print spatial_decay
+        if spatial_decay==0:
+            gaussian_one_factor_sampling(occID_set, eventID, locID, hazard_values, N_loc, N_vul, 1)
+        else:
+            # sort by hazard 1:
+            #hazard1=[dump[0] for dump in hazard_values]
+            #sort_index=np.argsort(hazard1,kind='mergesort') # return the index of hazard1 in increasing order
+            #sort_index=[sort_index[i] for i in xrange(-1,-1-len(hazard_values),-1)] # reverse to decreasing order
+            # all sorted by hazard 1, decreasing order
+           
+            # instead, do random sampling
+            sort_index=np.random.permutation(N_loc)
+            #instead of doing random permutation for all
+            '''
+            if N_loc<=N_MaxSamplingSize:
+                sort_index=np.random.permutation(N_loc)
+            else:
+                sort_index1=np.random.choice(N_loc, N_MaxSamplingSize,replace=False)
+                sort_index2=np.array(list(set(range(N_loc))-set(sort_index1)))
+                #sort_index2=np.array([True]*N_loc)
+                #sort_index2[sort_index1]=False
+                sort_index=np.concatenate((sort_index1,np.where(sort_index2)[0]))
+            '''
+            ## end
+            locID=[locID[ll] for ll in sort_index]
+            lat=[lat[ll] for ll in sort_index]
+            lon=[lon[ll] for ll in sort_index]
+            hazard_values=[hazard_values[ll] for ll in sort_index]
+            spatial_sampling(occID_set, eventID, locID, lat, lon, hazard_values, N_loc, N_vul, spatial_decay, N_MaxSamplingSize)
+        #
+def mapper_output(sample_sev,occID,eventID,locID,hazard_values,N_loc,N_vul):
+    '''
+    (1)sample_sev is a vector of N_loc*N_vul length, in the format of [loc1_q1,loc1_q2,...locN_q1,locN_q2]
+    (2)ONLY accept single_occID
+    '''
+    if np.array(occID).size>1:
+        raise Exception('Output one occurrence at a time!')
+    for i in xrange(N_loc):
+        #map_key=','.join([occID,eventID])
+        #map_value= ','.join(sample_sev_total[(i*N_vul):((i+1)*N_vul)])
+        #map_value=','.join([locID[i],map_value])
+        #map_value = ','.join([map_value]+hazard_values[i])
+        map_key=occID
+        map_value= ','.join(sample_sev[(i*N_vul):((i+1)*N_vul)])
+        map_value=','.join([locID[i],map_value])
+        map_value = ','.join([map_value]+hazard_values[i])
+        map_value = ','.join([eventID, map_value])
+        print '%s\t%s' %(map_key, map_value)
+   
+
+def main(argv):
+    if len(sys.argv)==5:
+        UNIFORM_TRUNCATE=False
+        # num_primary_hazard=int(sys.argv[1])
+        num_primary_hazard=7
+        # trunc_primary_hazard=int(sys.argv[2])
+        trunc_primary_hazard=3
+        # if not trunc_primary_hazard:
+        #     trunc_primary_hazard=3
+        # num_second_hazard=int(sys.argv[3])
+        num_second_hazard=2
+        # trunc_second_hazard=int(sys.argv[4])
+        trunc_second_hazard=3
+        # if not trunc_second_hazard:
+        #     trunc_second_hazard=3
+        '''
+        print '\n\n************'
+        print 'OGVHQ BEING GENERATED:'
+        print '**************'
+        print 'Num of Primary Hazards: '+repr(num_primary_hazard)
+        print 'Primary Hazards Rounding: '+repr(trunc_primary_hazard)+' decimal points'
+        print 'Num of Secondary Hazards: '+repr(num_second_hazard)
+        print 'Secondary Hazards Rounding: '+repr(trunc_second_hazard)+' decimal points'  
+        print '**************\n'
+        '''    
+    else:
+        UNIFORM_TRUNCATE=True
+        trunc_hazard=3
+        '''
+        print '\n\n************'
+        print 'OGVHQ BEING GENERATED USING DEFAULT SETTINGS:'
+        print '**************'
+        print 'All Hazards Rounding: '+repr(trunc_primary_hazard)+' decimal points'
+        print '**************\n'
+        '''       
+    #N_years='100000'
+    #############
+    #############
+    # global variable N_vul=1,and spatial decay
+    ############
+    ############
+    N_vul=int(1)
+    spatial_decay=-0.051
+    N_MaxSamplingSize=1000
+    ##
+    ## or do: N_MaxSamplingSize=int(np.ceil(N_loc*0.2))
+    ###   
+    ####################
+    ####################
+    ###################
+    ####
+    locinfo_set = set([])
+    occID_set = set([])
+    eventID_prev = '-9999'
+       
+    start_of_file = True
+    line=stdin.readline()
+    try:
+        while line:
+            input_words = line.strip().split(",")
+            #input_words =  re.split('\D+', line)
+            #input_words = filter(None, input_words)
+            #eventID = int(eventID)
+            occID_new =input_words[0]
+            eventID_new =input_words[1]
+            locinfo_new = tuple(input_words[2:])  # has to be tuple to add to set
+           
+            if (eventID_new == eventID_prev) or start_of_file:
+                locinfo_set.add(locinfo_new)
+                occID_set.add(occID_new)
+                eventID_prev = eventID_new
+            else:               
+                locID= [info[0] for info in locinfo_set]
+                lat=np.array([float(info[1]) for info in locinfo_set])
+                lon=np.array([float(info[2]) for info in locinfo_set])
+                hazard_values=[]
+               
+                N_loc=len(locID)
+                lat=lat+sps.norm.rvs(loc=0,scale=1e-6,size=N_loc)
+                lon=lon+sps.norm.rvs(loc=0,scale=1e-6,size=N_loc)
+                for info in locinfo_set:
+                    hazard_info=info[3:]
+                    if UNIFORM_TRUNCATE:
+                        hazard_info= [str(round(float(ll),trunc_hazard)) if ll else '0' for ll in hazard_info]
+                    else:
+                        hazard_info= [str(round(float(ll),trunc_primary_hazard)) if ll else '0' for ll in hazard_info[:num_primary_hazard]]+ [str(round(float(ll),trunc_second_hazard)) if ll else '0' for ll in hazard_info[num_primary_hazard:(num_primary_hazard+num_second_hazard)]]
+                    hazard_values.append(hazard_info)
+                event_sampling(occID_set, eventID_prev, locID, lat, lon, hazard_values,N_loc, N_vul, spatial_decay, N_MaxSamplingSize)
+                ## DONE
+                locinfo_set = set([])
+                locinfo_set.add(locinfo_new)
+                occID_set = set([])
+                occID_set.add(occID_new)
+                eventID_prev = eventID_new
+               
+            #line=False
+            start_of_file = False
+            #line  = f.readline()
+            line=stdin.readline()
+           
+        ## After exising while loop ,sample the additional last event
+        locID= [info[0] for info in locinfo_set]
+        lat=np.array([float(info[1]) for info in locinfo_set])
+        lon=np.array([float(info[2]) for info in locinfo_set])
+        hazard_values=[]
+        N_loc=len(locID)
+        lat=lat+sps.uniform.rvs(loc=-1e-6,scale=2e-6,size=N_loc)
+        lon=lon+sps.uniform.rvs(loc=-1e-6,scale=2e-6,size=N_loc)
+        for info in locinfo_set:
+            hazard_info=info[3:]
+            if UNIFORM_TRUNCATE:
+                hazard_info= [str(round(float(ll),trunc_hazard)) if ll else '0' for ll in hazard_info]
+            else:
+                hazard_info= [str(round(float(ll),trunc_primary_hazard)) if ll else '0' for ll in hazard_info[:num_primary_hazard]]+ [str(round(float(ll),trunc_second_hazard)) if ll else '0' for ll in hazard_info[num_primary_hazard:(num_primary_hazard+num_second_hazard)]]
+            hazard_values.append(hazard_info)
+        event_sampling(occID_set, eventID_prev, locID, lat, lon, hazard_values,N_loc, N_vul,spatial_decay, N_MaxSamplingSize)
+        #DONE
+    except EOFError:
+        return None
+if __name__ == "__main__":
+     main(sys.argv)
