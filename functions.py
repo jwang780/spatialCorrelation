@@ -6,6 +6,7 @@ import scipy.stats as sps
 import scipy.spatial.distance as spsd
 from sys import stdin
 
+# Input: A is a square matrix
 def nearPSD(A, epsilon = 0):
     n = A.shape[0]
     eigval, eigvec = np.linalg.eig(A)
@@ -17,6 +18,11 @@ def nearPSD(A, epsilon = 0):
     out = B * B.T
     return (np.array(out))
 
+# Input: A is a square matrix
+# Output: A is a square matrix
+# 
+# Some multiple of the identity matrix is added to make all eigenvalues greater
+# than or equal to epsilon. 
 def nearPSD_eigen(A, epsilon=1e-4):
     eigen = sp.linalg.eigvalsh(A)
     if np.any(eigen < 0):
@@ -26,6 +32,14 @@ def nearPSD_eigen(A, epsilon=1e-4):
 
 radius = 6371  # km
 
+# Input: origin and destination are two pairs of coordinates
+# Output: d is a number
+# 
+# This is an approximation of distance on the surface of a sphere. 
+# c should be angle between the lines from the origin and destination to the
+# center of the sphere. 
+# This angle is probably easiest to compute using dot products (inner products)
+# instead of all this trigonometry. 
 def distance(origin, destination):
     lat1, lon1 = origin
     lat2, lon2 = destination
@@ -39,6 +53,17 @@ def distance(origin, destination):
     d = radius * c
     return d
 
+# Inputs: origin is a list of locations
+# destination is a list of locations
+# N_orig is the size of the input origin
+# N_dest is the size of the input destination
+# Output: distance is a matrix of distances between locations in origin and 
+# locations in destination
+# 
+# Instead of calling the distance() function, the code in the distance function
+# is rewritten here, in order to compute cos_lat2 only once per iterations
+# This is at best a 25% decrease in runtime, as math.sin and math.cos functions
+# are used 3 more times per iteration anyways. 
 def distance2(origin, destination, N_orig, N_dest):
     global radius
     distance = np.zeros([N_orig, N_dest])
@@ -57,6 +82,11 @@ def distance2(origin, destination, N_orig, N_dest):
 
     return distance
 
+# Inputs: coords is a list of locations
+# Outputs: A symmetric distance matrix
+# 
+# distance_compact is a vector/1-dim array, squareform transforms to a square
+# symmetric distance matrix. 
 def distance_square(coords):
     N_loc = len(coords)
     distance_compact = []
