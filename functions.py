@@ -7,6 +7,10 @@ import scipy.spatial.distance as spsd
 from sys import stdin
 
 # Input: A is a square matrix
+# Output: out is a positive semidefinite matrix. 
+# 
+# I think that this is an attempt to create a positive definite matrix with the
+# same eigen vectors as A. 
 def nearPSD(A, epsilon = 0):
     n = A.shape[0]
     eigval, eigvec = np.linalg.eig(A)
@@ -19,10 +23,11 @@ def nearPSD(A, epsilon = 0):
     return (np.array(out))
 
 # Input: A is a square matrix
-# Output: A is a square matrix
+# epsilon is a positive number.
+# Output: A is a square matrix that is positive definite. 
 # 
 # Some multiple of the identity matrix is added to make all eigenvalues greater
-# than or equal to epsilon. 
+# than or equal to epsilon. (i.e., the output is a positive definite matrix)
 def nearPSD_eigen(A, epsilon=1e-4):
     eigen = sp.linalg.eigvalsh(A)
     if np.any(eigen < 0):
@@ -33,7 +38,7 @@ def nearPSD_eigen(A, epsilon=1e-4):
 radius = 6371  # km
 
 # Input: origin and destination are two pairs of coordinates
-# Output: d is a number
+# Output: d the distance between the two coordinates. 
 # 
 # This is an approximation of distance on the surface of a sphere. 
 # c should be angle between the lines from the origin and destination to the
@@ -52,6 +57,28 @@ def distance(origin, destination):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     d = radius * c
     return d
+
+# Input: origin and destination are two pairs of coordinates
+# Output: d is the distance between the two coordinates. 
+def distance_dot(origin, destination):
+    lat1, lon1 = origin
+    lat2, lon2 = destination
+    # For computing the angle between the vectors, the length of the vectors is 
+    # not important. 
+    x1, y1, z1 = polar_to_cartesian(1, lon1, math.pi - lat1)
+    x2, y2, z2 = polar_to_cartesian(1, lon2, math.pi - lat2)
+    dot_product = x1 * x2 + y1 * y2 + z1 * z2
+    angle = math.acos(dot_product) # magnitude of both vector is 1
+    d = radius * angle # arclength
+    return d
+
+# Input: A location in spherical coordinates
+# Output: A location in cartesian coordinates
+def polar_to_cartesian(r, theta, phi):
+    x = r * math.sin(phi) * math.cos(theta)
+    y = r * math.sin(phi) * math.sin(theta)
+    z = r * math.cos(phi)
+    return x, y, z
 
 # Inputs: origin is a list of locations
 # destination is a list of locations
@@ -183,6 +210,10 @@ def spatial_sampling(occID_set, eventID, locID, spatial_decay, N_MaxSamplingSize
                 corr_spatial_cholesky = sp.linalg.cholesky(corr_spatial2, lower=True)
                 break
             except:
+                # This should never happen. 
+                # If this block is executed, this means that the matrix 
+                # corr_spatial has non-real eigenvalues
+                # which means that corr_spatial is not a symmetric real matrix
                 try:
                     corr_spatial2 = nearPSD(corr_spatial)
                     corr_spatial_cholesky = sp.linalg.cholesky(corr_spatial2, lower=True)
