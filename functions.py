@@ -60,7 +60,7 @@ def distance(origin, destination):
 
 # Input: origin and destination are two pairs of coordinates
 # Output: d is the distance between the two coordinates. 
-def distance_dot(origin, destination):
+def distance_dot(origin, destination):  
     lat1, lon1 = origin
     lat2, lon2 = destination
     # For computing the angle between the vectors, the length of the vectors is 
@@ -69,6 +69,7 @@ def distance_dot(origin, destination):
     x2, y2, z2 = polar_to_cartesian(1, lon2, math.pi - lat2)
     dot_product = x1 * x2 + y1 * y2 + z1 * z2
     angle = math.acos(dot_product) # magnitude of both vector is 1
+    global radius
     d = radius * angle # arclength
     return d
 
