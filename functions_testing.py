@@ -11,8 +11,6 @@ def nearPSD_testing():
 # function and the distance_dot() function. 
 # The distance_dot() function computes great circle distances by computing the 
 # angle between two vectors using a dot product.
-# It appears that there is little relation between the values computed by 
-# distance() and distance_dot()
 def distance_testing():
     distance_list = []
     distance_dot_list = []
@@ -29,10 +27,10 @@ def distance_testing():
     ax.scatter(distance_list, distance_dot_list)
     plt.show()
     #print("1 degree latitude at equator comparison:")
-    #lat1 = 0
-    #lat2 = 1
+    #lat1 = 50
+    #lat2 = 55
     #lon1 = 0
-    #lon2 = 0
+    #lon2 = 5
     #origin = lat1, lon1
     #destination = lat2, lon2
     #print(distance(origin, destination))

@@ -70,14 +70,14 @@ def distance(origin, destination):
 def distance_dot(origin, destination):  
     lat1, lon1 = origin
     lat2, lon2 = destination
-    lat1 = math.radians(lat1)
-    lat2 = math.radians(lat2)
-    lon1 = math.radians(lon1)
-    lon2 = math.radians(lon2)
+    phi1 = math.radians(90 - lat1)
+    phi2 = math.radians(90 - lat2)
+    theta1 = math.radians(lon1)
+    theta2 = math.radians(lon2)
     # For computing the angle between the vectors, the length of the vectors is 
     # not important. 
-    x1, y1, z1 = polar_to_cartesian(1, lon1, math.pi - lat1)
-    x2, y2, z2 = polar_to_cartesian(1, lon2, math.pi - lat2)
+    x1, y1, z1 = polar_to_cartesian(1, theta1, phi1)
+    x2, y2, z2 = polar_to_cartesian(1, theta2, phi2)
     dot_product = x1 * x2 + y1 * y2 + z1 * z2
     # Bounded in [-1, 1] to get rid of floating point errors. 
     dot_product = min(1, dot_product)
