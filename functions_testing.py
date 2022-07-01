@@ -11,27 +11,32 @@ def nearPSD_testing():
 # function and the distance_dot() function. 
 # The distance_dot() function computes great circle distances by computing the 
 # angle between two vectors using a dot product.
-# According to this test, the distance() function is computing distances around
-# 50 times too small. 
+# It appears that there is little relation between the values computed by 
+# distance() and distance_dot()
 def distance_testing():
-    numberOfCases = 100
-    maxDiff = 0.01
-    centerLat = random.random() * (math.pi - maxDiff) - (math.pi - maxDiff) / 2
-    centerLon = random.random() * (math.pi - maxDiff) * 2 + maxDiff
     distance_list = []
     distance_dot_list = []
-    for i in range(numberOfCases):
-        lat1 = random.random() * maxDiff * 2 - maxDiff + centerLat
-        lon1 = random.random() * maxDiff * 2 - maxDiff + centerLon
-        origin = lat1, lon1
-        lat2 = random.random() * maxDiff * 2 - maxDiff + centerLat
-        lon2 = random.random() * maxDiff * 2 - maxDiff + centerLon
-        destination = lat2, lon2
-        distance_list.append(distance(origin, destination))
-        distance_dot_list.append(distance_dot(origin, destination))
+    stepSize = 10
+    lon1 = 0 #without loss of generality, by rotational symmetry
+    for lat1 in range(-90, 89, stepSize):
+        for lat2 in range(lat1 + stepSize, 89, stepSize):
+            for lon2 in range(lon1 + stepSize, 359, stepSize):
+                origin = lat1, lon1
+                destination = lat2, lon2
+                distance_list.append(distance(origin, destination))
+                distance_dot_list.append(distance_dot(origin, destination))
     fig, ax = plt.subplots()
     ax.scatter(distance_list, distance_dot_list)
     plt.show()
+    #print("1 degree latitude at equator comparison:")
+    #lat1 = 0
+    #lat2 = 1
+    #lon1 = 0
+    #lon2 = 0
+    #origin = lat1, lon1
+    #destination = lat2, lon2
+    #print(distance(origin, destination))
+    #print(distance_dot(origin, destination))
 
 def kronmult_testing():
     pass
@@ -41,3 +46,4 @@ def kronmult2_testing():
 
 if __name__ == '__main__':
     distance_testing()
+    pass

@@ -37,8 +37,8 @@ def nearPSD_eigen(A, epsilon=1e-4):
 
 radius = 6371  # km
 
-# Input: origin and destination are two pairs of coordinates
-# Output: d the distance between the two coordinates. 
+# Input: origin and destination are two pairs of coordinates in degrees
+# Output: d the distance between the two coordinates in kilometers
 # 
 # This is an approximation of distance on the surface of a sphere. 
 # c should be angle between the lines from the origin and destination to the
@@ -55,20 +55,33 @@ def distance(origin, destination):
     sin_lat = math.sin(dlat / 2)
     sin_lon = math.sin(dlon / 2)
     a = sin_lat * sin_lat + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * sin_lon * sin_lon
+    
+    # bounding the variable a to be withing [-1, 1], so that sqrt(1-a) can be 
+    # commputed without floating point errors. 
+    a = min(1, a)
+    a = max(-1, a)
+
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     d = radius * c
     return d
 
-# Input: origin and destination are two pairs of coordinates
-# Output: d is the distance between the two coordinates. 
+# Input: origin and destination are two pairs of coordinates in degrees
+# Output: d is the distance between the two coordinates in kilometers
 def distance_dot(origin, destination):  
     lat1, lon1 = origin
     lat2, lon2 = destination
+    lat1 = math.radians(lat1)
+    lat2 = math.radians(lat2)
+    lon1 = math.radians(lon1)
+    lon2 = math.radians(lon2)
     # For computing the angle between the vectors, the length of the vectors is 
     # not important. 
     x1, y1, z1 = polar_to_cartesian(1, lon1, math.pi - lat1)
     x2, y2, z2 = polar_to_cartesian(1, lon2, math.pi - lat2)
     dot_product = x1 * x2 + y1 * y2 + z1 * z2
+    # Bounded in [-1, 1] to get rid of floating point errors. 
+    dot_product = min(1, dot_product)
+    dot_product = max(-1, dot_product)
     angle = math.acos(dot_product) # magnitude of both vector is 1
     global radius
     d = radius * angle # arclength
@@ -90,9 +103,10 @@ def polar_to_cartesian(r, theta, phi):
 # locations in destination
 # 
 # Instead of calling the distance() function, the code in the distance function
-# is rewritten here, in order to compute cos_lat2 only once per iterations
+# is rewritten here, in order to compute cos_lat2 only once per iteration of the
+# outer for loop. 
 # This is at best a 25% decrease in runtime, as math.sin and math.cos functions
-# are used 3 more times per iteration anyways. 
+# are used 3 more times per iteration of the inner for loop. 
 def distance2(origin, destination, N_orig, N_dest):
     global radius
     distance = np.zeros([N_orig, N_dest])
@@ -125,6 +139,8 @@ def distance_square(coords):
 
     return spsd.squareform(np.array(distance_compact))
 
+# Inputs: Q is a list containing up to 2 matrices
+# X is a matrix filled with random variables
 def kronmult2(Q, X, mB, nX, B_type):
     mA, nA = Q[0].shape
     nB = mB
