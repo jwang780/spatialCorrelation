@@ -45,6 +45,7 @@ radius = 6371  # km
 # center of the sphere. 
 # This angle is probably easiest to compute using dot products (inner products)
 # instead of all this trigonometry. 
+# Currently unused. 
 def distance(origin, destination):
     lat1, lon1 = origin
     lat2, lon2 = destination
@@ -96,17 +97,17 @@ def distance2(origin, destination, N_orig, N_dest):
     global radius
     distance = np.zeros([N_orig, N_dest])
     for j in xrange(N_dest):
-        lat2, lon2 = destination[j]
-        cos_lat2 = math.cos(math.radians(lat2))
+        # lat2, lon2 = destination[j]
+        # cos_lat2 = math.cos(math.radians(lat2))
         for i in xrange(N_orig):
-            lat1, lon1 = origin[i]
-            dlat = math.radians(lat2 - lat1)
-            dlon = math.radians(lon2 - lon1)
-            sin_lat = math.sin(dlat / 2)
-            sin_lon = math.sin(dlon / 2)
-            a = sin_lat * sin_lat + math.cos(math.radians(lat1)) * cos_lat2 * sin_lon * sin_lon
-            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-            distance[i, j] = radius * c
+            # lat1, lon1 = origin[i]
+            # dlat = math.radians(lat2 - lat1)
+            # dlon = math.radians(lon2 - lon1)
+            # sin_lat = math.sin(dlat / 2)
+            # sin_lon = math.sin(dlon / 2)
+            # a = sin_lat * sin_lat + math.cos(math.radians(lat1)) * cos_lat2 * sin_lon * sin_lon
+            # c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+            distance[i, j] = distance_dot(origin[i], destination[j])
 
     return distance
 
@@ -120,7 +121,7 @@ def distance_square(coords):
     distance_compact = []
     for i in xrange(N_loc):
         for j in xrange(i + 1, N_loc):
-            distance_compact.append(distance(coords[i], coords[j]))
+            distance_compact.append(distance_dot(coords[i], coords[j]))
 
     return spsd.squareform(np.array(distance_compact))
 
