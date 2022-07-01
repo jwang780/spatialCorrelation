@@ -14,7 +14,7 @@ def nearPSD_testing():
 def distance_testing():
     distance_list = []
     distance_dot_list = []
-    stepSize = 10
+    stepSize = 100
     lon1 = 0 #without loss of generality, by rotational symmetry
     for lat1 in range(-90, 89, stepSize):
         for lat2 in range(lat1 + stepSize, 89, stepSize):
@@ -25,16 +25,15 @@ def distance_testing():
                 distance_dot_list.append(distance_dot(origin, destination))
     fig, ax = plt.subplots()
     ax.scatter(distance_list, distance_dot_list)
-    plt.show()
-    #print("1 degree latitude at equator comparison:")
-    #lat1 = 50
-    #lat2 = 55
-    #lon1 = 0
-    #lon2 = 5
-    #origin = lat1, lon1
-    #destination = lat2, lon2
-    #print(distance(origin, destination))
-    #print(distance_dot(origin, destination))
+    #plt.show()
+    lat1 = 50
+    lat2 = 50
+    lon1 = 0
+    lon2 = 0
+    origin = lat1, lon1
+    destination = lat2, lon2
+    print(distance(origin, destination))
+    print(distance_dot(origin, destination))
 
 def kronmult_testing():
     pass

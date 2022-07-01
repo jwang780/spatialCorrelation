@@ -45,7 +45,7 @@ radius = 6371  # km
 # center of the sphere. 
 # This angle is probably easiest to compute using dot products (inner products)
 # instead of all this trigonometry. 
-# Currently unused. 
+# This function uses haversines formula. 
 def distance(origin, destination):
     lat1, lon1 = origin
     lat2, lon2 = destination
@@ -82,7 +82,7 @@ def distance_dot(origin, destination):
     # Bounded in [-1, 1] to get rid of floating point errors. 
     dot_product = min(1, dot_product)
     dot_product = max(-1, dot_product)
-    angle = math.acos(dot_product) # magnitude of both vector is 1
+    angle = math.acos(dot_product) # magnitude of both vectors is 1
     global radius
     d = radius * angle # arclength
     return d
@@ -121,7 +121,7 @@ def distance2(origin, destination, N_orig, N_dest):
             # sin_lon = math.sin(dlon / 2)
             # a = sin_lat * sin_lat + math.cos(math.radians(lat1)) * cos_lat2 * sin_lon * sin_lon
             # c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-            distance[i, j] = distance_dot(origin[i], destination[j])
+            distance[i, j] = distance(origin[i], destination[j])
 
     return distance
 
@@ -135,7 +135,7 @@ def distance_square(coords):
     distance_compact = []
     for i in xrange(N_loc):
         for j in xrange(i + 1, N_loc):
-            distance_compact.append(distance_dot(coords[i], coords[j]))
+            distance_compact.append(distance(coords[i], coords[j]))
 
     return spsd.squareform(np.array(distance_compact))
 
