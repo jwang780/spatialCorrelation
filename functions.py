@@ -142,6 +142,7 @@ def kronmult2(Q, X, mB, nX, B_type):
             Y[:, i] = np.dot(np.dot(Q[0], x), Q[1].T).reshape(1, -1)
     return Y
 
+# This function is unused. 
 def kronmult(Q, X):
     N = len(Q)
     n = [0] * N
